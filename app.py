@@ -59,7 +59,7 @@ def handle_message(data):
             instructions="Respond concisely and helpfully."
         )
 
-        async for event in openai.beta.threads.runs.stream(thread_id=thread.id, run_id=run.id):
+        for event in openai.beta.threads.runs.stream(thread_id=thread.id, run_id=run.id):
             if event.event == "thread.message.delta":
                 for content in event.data.delta.content:
                     if content.type == "text":
