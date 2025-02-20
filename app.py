@@ -7,16 +7,13 @@ import time
 import openai
 from dotenv import load_dotenv
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(dotenv_path=os.path.join(BASE_DIR, ".env"))
 
 from utils.validation import validate_subscription, validate_message
 
 app = Flask(__name__)
 socketio = SocketIO(app, cors_allowed_origins="*")
-
-# OpenAI API Key
-openai.api_key = os.getenv("OPENAPI_KEY")
 
 # Store active user connections
 active_users = {}
@@ -43,22 +40,55 @@ def handle_subscription(data):
 @socketio.on("message")
 def handle_message(data):
     try:
+        # Validate the incoming message
         user_id, message = validate_message(data)
-        response_stream = openai.ChatCompletion.create(
-            model="gpt-4",
-            messages=[{"role": "user", "content": message}],
-            stream=True
+
+        # OpenAI API Key
+        openai.api_key = os.getenv("OPENAPI_KEY")
+
+        thread = openai.beta.threads.create()
+
+        openai.beta.threads.messages.create(
+            thread_id=thread.id,
+            role="user",
+            content=message
         )
-        for chunk in response_stream:
-            chunk_text = chunk["choices"][0]["delta"].get("content", "")
-            if chunk_text:
-                emit("response_chunk", {
-                    "user_id": user_id,
-                    "type": "response",
-                    "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                    "payload": {"text_chunk": chunk_text}
-                })
+        run = openai.beta.threads.runs.create(
+            thread_id=thread.id,
+            assistant_id=os.getenv("OPENAPI_ASSISTANT_ID"),
+            instructions="Respond concisely and helpfully."
+        )
+
+        print("run", run)
+
+        while True:
+            run_status = openai.beta.threads.runs.retrieve(
+                thread_id=thread.id,
+                run_id=run.id
+            )
+
+            print("run_status", run_status)
+
+            if run_status.status == "completed":
+                messages = openai.beta.threads.messages.list(thread_id=thread.id)
+                print("messages", messages)
+                for msg in messages.data:
+                    if msg.role == "assistant":
+                        emit("response_chunk", {
+                            "user_id": user_id,
+                            "type": "response",
+                            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                            "payload": {"text_chunk": msg.content[0].text.value}
+                        })
+                break
+
+            elif run_status.status in ["failed", "cancelled"]:
+                raise Exception(f"Run failed or was cancelled: {run_status.last_error}")
+
+            time.sleep(1)
+
     except Exception as e:
+        print("e", e)
         emit("error", {
             "user_id": data.get("user_id"),
             "type": "error",
