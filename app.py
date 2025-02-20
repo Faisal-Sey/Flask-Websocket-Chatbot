@@ -59,33 +59,16 @@ def handle_message(data):
             instructions="Respond concisely and helpfully."
         )
 
-        print("run", run)
-
-        while True:
-            run_status = openai.beta.threads.runs.retrieve(
-                thread_id=thread.id,
-                run_id=run.id
-            )
-
-            print("run_status", run_status)
-
-            if run_status.status == "completed":
-                messages = openai.beta.threads.messages.list(thread_id=thread.id)
-                print("messages", messages)
-                for msg in messages.data:
-                    if msg.role == "assistant":
+        async for event in openai.beta.threads.runs.stream(thread_id=thread.id, run_id=run.id):
+            if event.event == "thread.message.delta":
+                for content in event.data.delta.content:
+                    if content.type == "text":
                         emit("response_chunk", {
                             "user_id": user_id,
                             "type": "response",
                             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                            "payload": {"text_chunk": msg.content[0].text.value}
+                            "payload": {"text_chunk": content.text.value}
                         })
-                break
-
-            elif run_status.status in ["failed", "cancelled"]:
-                raise Exception(f"Run failed or was cancelled: {run_status.last_error}")
-
-            time.sleep(1)
 
     except Exception as e:
         print("e", e)
