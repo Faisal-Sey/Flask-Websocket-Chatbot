@@ -4,8 +4,10 @@ from pathlib import Path
 from flask import Flask, request
 from flask_socketio import SocketIO, emit
 import time
-import openai
 from dotenv import load_dotenv
+from openai import OpenAI
+
+from utils.event_handler import EventHandler
 
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(dotenv_path=os.path.join(BASE_DIR, ".env"))
@@ -14,6 +16,8 @@ from utils.validation import validate_subscription, validate_message
 
 app = Flask(__name__)
 socketio = SocketIO(app, cors_allowed_origins="*")
+
+client = OpenAI(api_key=os.getenv("OPENAPI_KEY"))
 
 # Store active user connections
 active_users = {}
@@ -43,32 +47,22 @@ def handle_message(data):
         # Validate the incoming message
         user_id, message = validate_message(data)
 
-        # OpenAI API Key
-        openai.api_key = os.getenv("OPENAPI_KEY")
+        thread = client.beta.threads.create()
 
-        thread = openai.beta.threads.create()
-
-        openai.beta.threads.messages.create(
+        client.beta.threads.messages.create(
             thread_id=thread.id,
             role="user",
             content=message
         )
-        run = openai.beta.threads.runs.create(
+
+        event_handler = EventHandler(user_id, socketio)
+
+        with client.beta.threads.runs.stream(
             thread_id=thread.id,
             assistant_id=os.getenv("OPENAPI_ASSISTANT_ID"),
-            instructions="Respond concisely and helpfully."
-        )
-
-        for event in openai.beta.threads.runs.stream(thread_id=thread.id, run_id=run.id):
-            if event.event == "thread.message.delta":
-                for content in event.data.delta.content:
-                    if content.type == "text":
-                        emit("response_chunk", {
-                            "user_id": user_id,
-                            "type": "response",
-                            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                            "payload": {"text_chunk": content.text.value}
-                        })
+            event_handler=event_handler
+        ) as stream:
+            stream.until_done()
 
     except Exception as e:
         print("e", e)
